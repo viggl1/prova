@@ -2,4 +2,6 @@ streamlit
 pandas
 rapidfuzz
 openpyxl
+streamlit-javascript
+
 
