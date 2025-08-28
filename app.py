@@ -17,81 +17,57 @@ def get_path(filename: str) -> str:
     return os.path.join(os.path.abspath("."), filename)
 
 def _normalize_text(x: str) -> str:
-    """
-    Normalizza testo per confronti case/accent-insensitive.
-    """
+    """Normalizza testo per confronti case/accent-insensitive."""
     if pd.isna(x):
         return ""
     x = str(x).strip().lower()
-    # rimuove accenti
     x = unicodedata.normalize("NFKD", x)
     x = "".join(c for c in x if not unicodedata.combining(c))
     return x
 
 @st.cache_data(show_spinner=False)
 def load_data() -> pd.DataFrame:
-    """
-    Carica il file Excel 'Ubicazione ricambi.xlsx' se presente nella cartella o bundle.
-    In alternativa usa il file caricato da UI (vedi uploader più sotto).
-    """
+    """Carica 'Ubicazione ricambi.xlsx' dal bundle/cartella; altrimenti DataFrame vuoto."""
     try:
         excel_path = get_path("Ubicazione ricambi.xlsx")
         if os.path.exists(excel_path):
-            df = pd.read_excel(excel_path)
-            return df
-        else:
-            return pd.DataFrame()
+            return pd.read_excel(excel_path)
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"Errore caricamento dati: {e}")
         return pd.DataFrame()
 
 def filter_contains_all_words(df: pd.DataFrame, column: str, query: str, require_all: bool) -> pd.DataFrame:
-    """
-    Filtra su 'column' usando tutte o alcune (ANY) parole della query, su colonne normalizzate '*_norm'.
-    """
+    """Filtra su 'column' usando tutte o almeno una parola della query (accent-insensitive)."""
     if not query:
         return df
     words = [_normalize_text(w) for w in query.split() if w.strip()]
     if not words:
         return df
-
     col_norm = f"{column}_norm"
-    if col_norm not in df.columns:
-        # fallback sicuro
-        tmp = df[column].astype(str).map(_normalize_text)
-    else:
-        tmp = df[col_norm]
+    s = df[col_norm] if col_norm in df.columns else df[column].astype(str).map(_normalize_text)
 
     if require_all:
         mask = pd.Series(True, index=df.index)
         for w in words:
-            mask &= tmp.str.contains(re.escape(w), na=False)
+            mask &= s.str.contains(re.escape(w), na=False)
     else:
-        # almeno una parola
         pattern = "|".join(re.escape(w) for w in words)
-        mask = tmp.str.contains(pattern, na=False)
-
+        mask = s.str.contains(pattern, na=False)
     return df[mask]
 
 def fuzzy_search_balanced(df: pd.DataFrame, column: str, query: str, threshold: int = 70) -> pd.DataFrame:
-    """
-    Fuzzy search con partial_ratio sul testo normalizzato.
-    """
+    """Fuzzy partial_ratio sul testo normalizzato."""
     if not query:
         return df
     qn = _normalize_text(query)
     col_norm = f"{column}_norm"
-    if col_norm not in df.columns:
-        s = df[column].astype(str).map(_normalize_text)
-    else:
-        s = df[col_norm]
+    s = df[col_norm] if col_norm in df.columns else df[column].astype(str).map(_normalize_text)
     mask = s.apply(lambda x: fuzz.partial_ratio(qn, x) >= threshold)
     return df[mask]
 
 def evidenzia_testo_multi(testo: str, query: str) -> str:
-    """
-    Evidenzia tutte le parole della query nel testo originale (case-insensitive).
-    """
+    """Evidenzia tutte le parole della query nel testo (case-insensitive)."""
     if not query or not isinstance(testo, str):
         return str(testo)
     words = [re.escape(w) for w in query.split() if w.strip()]
@@ -130,7 +106,7 @@ st.markdown("""
 # ---------------- CARICA DATI ----------------
 df = load_data()
 
-# Fallback: uploader se il file non è nel bundle/cartella
+# Fallback: uploader se non trovato
 if df.empty:
     up = st.file_uploader("Carica 'Ubicazione ricambi.xlsx'", type=["xlsx"])
     if up is not None:
@@ -154,7 +130,7 @@ if missing:
     st.error(f"Mancano le colonne richieste: {', '.join(sorted(missing))}")
     st.stop()
 
-# Colonne normalizzate per filtri rapidi
+# Colonne normalizzate
 for col in ["Codice", "Descrizione", "Ubicazione", "Categoria"]:
     df[f"{col}_norm"] = df[col].astype(str).map(_normalize_text)
 
@@ -170,15 +146,16 @@ defaults = {
     "page_idx": 1,
 }
 for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+    st.session_state.setdefault(k, v)
 
 def reset_filtri():
-    st.session_state.codice = ""
-    st.session_state.descrizione = ""
-    st.session_state.ubicazione = ""
-    st.session_state.categoria = "Tutte"
-    st.session_state.page_idx = 1
+    st.session_state.update({
+        "codice": "",
+        "descrizione": "",
+        "ubicazione": "",
+        "categoria": "Tutte",
+        "page_idx": 1
+    })
 
 # ---------------- DETECT MOBILE ----------------
 screen_width = st_javascript("window.innerWidth")
@@ -207,28 +184,22 @@ with sidebar_container:
 # ---------------- FILTRAGGIO ----------------
 filtro = df
 
-# Codice: contiene (veloce)
 if st.session_state.codice:
     code_q = _normalize_text(st.session_state.codice)
     filtro = filtro[filtro["Codice_norm"].str.contains(re.escape(code_q), na=False)]
 
-# Descrizione: combinazione contains-parole e fuzzy
 if st.session_state.descrizione:
-    # prima filtro per parole (ALL/ANY)
     filtro = filter_contains_all_words(
         filtro, "Descrizione", st.session_state.descrizione.strip(), require_all=st.session_state.match_all_words
     )
-    # poi fuzzy sul risultato (riduce molto il costo)
     filtro = fuzzy_search_balanced(
         filtro, "Descrizione", st.session_state.descrizione.strip(), threshold=st.session_state.soglia_fuzzy
     )
 
-# Ubicazione: contiene
 if st.session_state.ubicazione:
     ubic_q = _normalize_text(st.session_state.ubicazione)
     filtro = filtro[filtro["Ubicazione_norm"].str.contains(re.escape(ubic_q), na=False)]
 
-# Categoria: uguale (case/accent-insensitive)
 if st.session_state.categoria != "Tutte":
     cat_q = _normalize_text(st.session_state.categoria)
     filtro = filtro[filtro["Categoria_norm"] == cat_q]
@@ -237,12 +208,12 @@ if st.session_state.categoria != "Tutte":
 total = len(filtro)
 st.markdown(f"### 📦 {total} risultato(i) trovati")
 
-# controllo paginazione
 page_size = int(st.session_state.page_size)
 max_pages = max(1, (total + page_size - 1) // page_size)
 st.session_state.page_idx = max(1, min(st.session_state.page_idx, max_pages))
 
-col_a, col_b, col_c = st.columns([1,1,2], vertical_alignment="center")
+# ✅ Patch: nessun vertical_alignment qui
+col_a, col_b, col_c = st.columns([1, 1, 2])
 with col_a:
     prev = st.button("⬅️ Pagina prec.")
 with col_b:
@@ -291,8 +262,4 @@ if is_mobile:
         """, unsafe_allow_html=True)
     st.markdown('<div class="top-btn" onclick="window.scrollTo({top: 0, behavior: \'smooth\'});">⬆️</div>', unsafe_allow_html=True)
 else:
-    st.dataframe(
-        page_df[download_cols],
-        use_container_width=True,
-        height=480
-    )
+    st.dataframe(page_df[download_cols], use_container_width=True, height=480)
