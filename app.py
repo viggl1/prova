@@ -185,10 +185,10 @@ with c2:
 
                 col_l, col_r = st.columns(2)
                 with col_l:
-                    st.text_input("🔢 Codice", placeholder="Es. 123AB", key="codice")
-                    st.text_input("📍 Ubicazione", placeholder="Es. Aisle 3 - Box 12", key="ubicazione")
+                    st.text_input("🔢 Codice", placeholder="Es. CG238258", key="codice")
+                    st.text_input("📍 Ubicazione", placeholder="Es. 0 B 001 03 - B2", key="ubicazione")
                 with col_r:
-                    st.text_input("📄 Descrizione", placeholder="Es. guarnizione olio", key="descrizione")
+                    st.text_input("📄 Descrizione", placeholder="Es. Boccola", key="descrizione")
                     categorie_uniche = ["Tutte"] + sorted(df["Categoria"].dropna().unique().tolist())
                     st.selectbox("🛠️ Categoria", categorie_uniche, key="categoria")
 
@@ -255,3 +255,4 @@ if is_mobile:
     st.markdown('<div class="top-btn" onclick="window.scrollTo({top: 0, behavior: \'smooth\'});">⬆️</div>', unsafe_allow_html=True)
 else:
     st.dataframe(filtro[download_cols], use_container_width=True, height=480)
+
