@@ -1,11 +1,15 @@
 import pandas as pd
+import numpy as np
 import streamlit as st
 from rapidfuzz import fuzz
-import os
-import sys
-import re
-import unicodedata
-from streamlit_javascript import st_javascript
+import os, sys, re, unicodedata
+
+# fallback opzionale per streamlit-javascript (mobile detect)
+try:
+    from streamlit_javascript import st_javascript
+except Exception:
+    def st_javascript(_code: str):
+        return None
 
 # ---------------- CONFIGURAZIONE ----------------
 st.set_page_config(page_title="Ricerca Ricambi", layout="wide")
@@ -17,7 +21,6 @@ def get_path(filename: str) -> str:
     return os.path.join(os.path.abspath("."), filename)
 
 def _normalize_text(x: str) -> str:
-    """Normalizza testo per confronti case/accent-insensitive."""
     if pd.isna(x):
         return ""
     x = str(x).strip().lower()
@@ -27,7 +30,6 @@ def _normalize_text(x: str) -> str:
 
 @st.cache_data(show_spinner=False)
 def load_data() -> pd.DataFrame:
-    """Carica 'Ubicazione ricambi.xlsx' dal bundle/cartella; altrimenti DataFrame vuoto."""
     try:
         excel_path = get_path("Ubicazione ricambi.xlsx")
         if os.path.exists(excel_path):
@@ -37,37 +39,7 @@ def load_data() -> pd.DataFrame:
         st.error(f"Errore caricamento dati: {e}")
         return pd.DataFrame()
 
-def filter_contains_all_words(df: pd.DataFrame, column: str, query: str, require_all: bool) -> pd.DataFrame:
-    """Filtra su 'column' usando tutte o almeno una parola della query (accent-insensitive)."""
-    if not query:
-        return df
-    words = [_normalize_text(w) for w in query.split() if w.strip()]
-    if not words:
-        return df
-    col_norm = f"{column}_norm"
-    s = df[col_norm] if col_norm in df.columns else df[column].astype(str).map(_normalize_text)
-
-    if require_all:
-        mask = pd.Series(True, index=df.index)
-        for w in words:
-            mask &= s.str.contains(re.escape(w), na=False)
-    else:
-        pattern = "|".join(re.escape(w) for w in words)
-        mask = s.str.contains(pattern, na=False)
-    return df[mask]
-
-def fuzzy_search_balanced(df: pd.DataFrame, column: str, query: str, threshold: int = 70) -> pd.DataFrame:
-    """Fuzzy partial_ratio sul testo normalizzato."""
-    if not query:
-        return df
-    qn = _normalize_text(query)
-    col_norm = f"{column}_norm"
-    s = df[col_norm] if col_norm in df.columns else df[column].astype(str).map(_normalize_text)
-    mask = s.apply(lambda x: fuzz.partial_ratio(qn, x) >= threshold)
-    return df[mask]
-
 def evidenzia_testo_multi(testo: str, query: str) -> str:
-    """Evidenzia tutte le parole della query nel testo (case-insensitive)."""
     if not query or not isinstance(testo, str):
         return str(testo)
     words = [re.escape(w) for w in query.split() if w.strip()]
@@ -75,6 +47,63 @@ def evidenzia_testo_multi(testo: str, query: str) -> str:
         return testo
     pattern = re.compile(r"(" + "|".join(words) + r")", re.IGNORECASE)
     return pattern.sub(r"<mark>\1</mark>", testo)
+
+def tokenize_query(q: str):
+    return [w for w in _normalize_text(q).split() if w]
+
+def apply_filters(df: pd.DataFrame, s) -> pd.DataFrame:
+    """
+    Filtraggio ottimizzato:
+    - maschere NumPy combinate in un solo pass
+    - contains con regex=False dove possibile
+    - prefiltra Descrizione per parole, poi fuzzy solo su sottoinsieme (limite configurabile)
+    """
+    n = len(df)
+    if n == 0:
+        return df
+
+    mask = np.ones(n, dtype=bool)
+
+    # Codice
+    if s.codice:
+        code_q = _normalize_text(s.codice)
+        mask &= df["Codice_norm"].str.contains(code_q, na=False, regex=False).to_numpy()
+
+    # Categoria
+    if s.categoria != "Tutte":
+        cat_q = _normalize_text(s.categoria)
+        mask &= (df["Categoria_norm"].to_numpy() == cat_q)
+
+    # Ubicazione
+    if s.ubicazione:
+        ubic_q = _normalize_text(s.ubicazione)
+        mask &= df["Ubicazione_norm"].str.contains(ubic_q, na=False, regex=False).to_numpy()
+
+    # Applica maschere base
+    res = df.loc[mask]
+
+    # Descrizione: prefiltra per parole
+    if s.descrizione:
+        words = tokenize_query(s.descrizione)
+        if words:
+            if s.match_all_words:
+                # tutte le parole (regex=False => più veloce)
+                for w in words:
+                    res = res[res["Descrizione_norm"].str.contains(w, na=False, regex=False)]
+            else:
+                # almeno una parola (qui usiamo regex True ma limitato a un'unica contains)
+                pattern = "|".join(map(re.escape, words))
+                res = res[res["Descrizione_norm"].str.contains(pattern, na=False, regex=True)]
+
+            # Fuzzy solo se il sottoinsieme è "gestibile"
+            limit = int(s.fuzzy_row_limit)
+            if len(res) <= limit:
+                qn = _normalize_text(s.descrizione)
+                # calcolo punteggi solo sulle righe candidate
+                scores = res["Descrizione_norm"].apply(lambda x: fuzz.partial_ratio(qn, x))
+                res = res.loc[scores >= s.soglia_fuzzy]
+
+    return res
 
 # ---------------- CSS ----------------
 st.markdown("""
@@ -130,7 +159,7 @@ if missing:
     st.error(f"Mancano le colonne richieste: {', '.join(sorted(missing))}")
     st.stop()
 
-# Colonne normalizzate
+# Colonne normalizzate (una volta sola)
 for col in ["Codice", "Descrizione", "Ubicazione", "Categoria"]:
     df[f"{col}_norm"] = df[col].astype(str).map(_normalize_text)
 
@@ -142,8 +171,8 @@ defaults = {
     "categoria": "Tutte",
     "soglia_fuzzy": 70,
     "match_all_words": True,
-    "page_size": 50,
-    "page_idx": 1,
+    "auto_apply": True,          # ← nuovo
+    "fuzzy_row_limit": 800,      # ← nuovo: max righe su cui applicare fuzzy
 }
 for k, v in defaults.items():
     st.session_state.setdefault(k, v)
@@ -154,7 +183,6 @@ def reset_filtri():
         "descrizione": "",
         "ubicazione": "",
         "categoria": "Tutte",
-        "page_idx": 1
     })
 
 # ---------------- DETECT MOBILE ----------------
@@ -177,69 +205,29 @@ with sidebar_container:
     st.divider()
     st.checkbox("Richiedi tutte le parole (più restrittivo)", key="match_all_words")
     st.slider("Soglia fuzzy", min_value=50, max_value=100, value=st.session_state.soglia_fuzzy, step=1, key="soglia_fuzzy")
+    st.number_input("Limite righe per fuzzy", min_value=100, max_value=5000, step=100, key="fuzzy_row_limit")
+
     st.divider()
-    st.number_input("Righe per pagina", 10, 500, value=st.session_state.page_size, step=10, key="page_size")
+    st.toggle("Applica automaticamente", key="auto_apply")
+    apply_now = st.button("⚡ Applica filtri adesso", disabled=st.session_state.auto_apply)
     st.button("🔄 Reset filtri", on_click=reset_filtri)
 
-# ---------------- FILTRAGGIO ----------------
-filtro = df
+# ---------------- FILTRAGGIO (ottimizzato) ----------------
+should_apply = st.session_state.auto_apply or apply_now
+if should_apply:
+    filtro = apply_filters(df, st.session_state)
+else:
+    filtro = df
 
-if st.session_state.codice:
-    code_q = _normalize_text(st.session_state.codice)
-    filtro = filtro[filtro["Codice_norm"].str.contains(re.escape(code_q), na=False)]
-
-if st.session_state.descrizione:
-    filtro = filter_contains_all_words(
-        filtro, "Descrizione", st.session_state.descrizione.strip(), require_all=st.session_state.match_all_words
-    )
-    filtro = fuzzy_search_balanced(
-        filtro, "Descrizione", st.session_state.descrizione.strip(), threshold=st.session_state.soglia_fuzzy
-    )
-
-if st.session_state.ubicazione:
-    ubic_q = _normalize_text(st.session_state.ubicazione)
-    filtro = filtro[filtro["Ubicazione_norm"].str.contains(re.escape(ubic_q), na=False)]
-
-if st.session_state.categoria != "Tutte":
-    cat_q = _normalize_text(st.session_state.categoria)
-    filtro = filtro[filtro["Categoria_norm"] == cat_q]
-
-# ---------------- RISULTATI + PAGINAZIONE ----------------
+# ---------------- RISULTATI ----------------
 total = len(filtro)
 st.markdown(f"### 📦 {total} risultato(i) trovati")
 
-page_size = int(st.session_state.page_size)
-max_pages = max(1, (total + page_size - 1) // page_size)
-st.session_state.page_idx = max(1, min(st.session_state.page_idx, max_pages))
-
-# ✅ Patch: nessun vertical_alignment qui
-col_a, col_b, col_c = st.columns([1, 1, 2])
-with col_a:
-    prev = st.button("⬅️ Pagina prec.")
-with col_b:
-    next_ = st.button("➡️ Pagina succ.")
-with col_c:
-    st.number_input("Vai a pagina", min_value=1, max_value=max_pages, value=st.session_state.page_idx, key="page_idx")
-
-if prev and st.session_state.page_idx > 1:
-    st.session_state.page_idx -= 1
-if next_ and st.session_state.page_idx < max_pages:
-    st.session_state.page_idx += 1
-
-start = (st.session_state.page_idx - 1) * page_size
-end = start + page_size
-page_df = filtro.iloc[start:end].copy()
-
-# ---------------- DOWNLOAD ----------------
 download_cols = ["Codice", "Descrizione", "Ubicazione", "Categoria"]
-if total > 0:
+
+# download SOLO su desktop/tablet (non mobile)
+if total > 0 and not is_mobile:
     cols = [c for c in download_cols if c in df.columns]
-    st.download_button(
-        "📥 Scarica risultati filtrati (CSV)",
-        page_df[cols].to_csv(index=False),
-        "risultati_filtrati.csv",
-        "text/csv",
-    )
     st.download_button(
         "📥 Scarica tutti i risultati (CSV)",
         filtro[cols].to_csv(index=False),
@@ -250,7 +238,7 @@ if total > 0:
 # ---------------- VISUALIZZAZIONE ----------------
 if is_mobile:
     keyword = st.session_state.descrizione
-    for _, row in page_df.iterrows():
+    for _, row in filtro.iterrows():
         descrizione_html = evidenzia_testo_multi(str(row["Descrizione"]), keyword)
         st.markdown(f"""
             <div class="card">
@@ -262,4 +250,4 @@ if is_mobile:
         """, unsafe_allow_html=True)
     st.markdown('<div class="top-btn" onclick="window.scrollTo({top: 0, behavior: \'smooth\'});">⬆️</div>', unsafe_allow_html=True)
 else:
-    st.dataframe(page_df[download_cols], use_container_width=True, height=480)
+    st.dataframe(filtro[download_cols], use_container_width=True, height=480)
