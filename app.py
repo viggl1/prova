@@ -1,10 +1,8 @@
 import pandas as pd
-import numpy as np
 import streamlit as st
-from rapidfuzz import fuzz
 import os, sys, re, unicodedata
 
-# fallback opzionale per streamlit-javascript (mobile detect)
+# fallback per streamlit-javascript (detect mobile)
 try:
     from streamlit_javascript import st_javascript
 except Exception:
@@ -46,64 +44,7 @@ def evidenzia_testo_multi(testo: str, query: str) -> str:
     if not words:
         return testo
     pattern = re.compile(r"(" + "|".join(words) + r")", re.IGNORECASE)
-    return pattern.sub(r"<mark>\1</mark>", testo)
-
-def tokenize_query(q: str):
-    return [w for w in _normalize_text(q).split() if w]
-
-def apply_filters(df: pd.DataFrame, s) -> pd.DataFrame:
-    """
-    Filtraggio ottimizzato:
-    - maschere NumPy combinate in un solo pass
-    - contains con regex=False dove possibile
-    - prefiltra Descrizione per parole, poi fuzzy solo su sottoinsieme (limite configurabile)
-    """
-    n = len(df)
-    if n == 0:
-        return df
-
-    mask = np.ones(n, dtype=bool)
-
-    # Codice
-    if s.codice:
-        code_q = _normalize_text(s.codice)
-        mask &= df["Codice_norm"].str.contains(code_q, na=False, regex=False).to_numpy()
-
-    # Categoria
-    if s.categoria != "Tutte":
-        cat_q = _normalize_text(s.categoria)
-        mask &= (df["Categoria_norm"].to_numpy() == cat_q)
-
-    # Ubicazione
-    if s.ubicazione:
-        ubic_q = _normalize_text(s.ubicazione)
-        mask &= df["Ubicazione_norm"].str.contains(ubic_q, na=False, regex=False).to_numpy()
-
-    # Applica maschere base
-    res = df.loc[mask]
-
-    # Descrizione: prefiltra per parole
-    if s.descrizione:
-        words = tokenize_query(s.descrizione)
-        if words:
-            if s.match_all_words:
-                # tutte le parole (regex=False => più veloce)
-                for w in words:
-                    res = res[res["Descrizione_norm"].str.contains(w, na=False, regex=False)]
-            else:
-                # almeno una parola (qui usiamo regex True ma limitato a un'unica contains)
-                pattern = "|".join(map(re.escape, words))
-                res = res[res["Descrizione_norm"].str.contains(pattern, na=False, regex=True)]
-
-            # Fuzzy solo se il sottoinsieme è "gestibile"
-            limit = int(s.fuzzy_row_limit)
-            if len(res) <= limit:
-                qn = _normalize_text(s.descrizione)
-                # calcolo punteggi solo sulle righe candidate
-                scores = res["Descrizione_norm"].apply(lambda x: fuzz.partial_ratio(qn, x))
-                res = res.loc[scores >= s.soglia_fuzzy]
-
-    return res
+    return pattern.sub(r"<mark>\\1</mark>", testo)
 
 # ---------------- CSS ----------------
 st.markdown("""
@@ -121,6 +62,8 @@ st.markdown("""
     .card h4 { margin: 0 0 8px; font-size: 18px; color: #007bff; }
     .card p { margin: 4px 0; font-size: 14px; color: #333; }
     mark { background-color: #ffeb3b; padding: 2px 4px; border-radius: 3px; }
+    .toolbar { display:flex; gap:.5rem; justify-content:flex-end; align-items:center; }
+    .muted { color:#666; font-size:12px; }
     .top-btn {
         position: fixed; bottom: 20px; right: 20px;
         background-color: #007bff; color: white;
@@ -149,75 +92,96 @@ if df.empty:
     st.error("Nessun dato disponibile.")
     st.stop()
 
-# Pulizia colonne
+# Pulizia colonne + requisiti
 df.columns = df.columns.str.strip().str.title()
-
-# Verifica colonne minime
 required_cols = {"Codice", "Descrizione", "Ubicazione", "Categoria"}
 missing = required_cols - set(df.columns)
 if missing:
     st.error(f"Mancano le colonne richieste: {', '.join(sorted(missing))}")
     st.stop()
 
-# Colonne normalizzate (una volta sola)
-for col in ["Codice", "Descrizione", "Ubicazione", "Categoria"]:
+# Colonne normalizzate
+for col in required_cols:
     df[f"{col}_norm"] = df[col].astype(str).map(_normalize_text)
 
 # ---------------- SESSION STATE ----------------
-defaults = {
-    "codice": "",
-    "descrizione": "",
-    "ubicazione": "",
-    "categoria": "Tutte",
-    "soglia_fuzzy": 70,
-    "match_all_words": True,
-    "auto_apply": True,          # ← nuovo
-    "fuzzy_row_limit": 800,      # ← nuovo: max righe su cui applicare fuzzy
-}
+defaults = {"codice": "", "descrizione": "", "ubicazione": "", "categoria": "Tutte"}
 for k, v in defaults.items():
     st.session_state.setdefault(k, v)
+st.session_state.setdefault("filters_applied", False)  # flag per bottone Applica
 
 def reset_filtri():
-    st.session_state.update({
-        "codice": "",
-        "descrizione": "",
-        "ubicazione": "",
-        "categoria": "Tutte",
-    })
+    for k, v in defaults.items():
+        st.session_state[k] = v
+    st.session_state["filters_applied"] = True  # forza refresh
 
 # ---------------- DETECT MOBILE ----------------
 screen_width = st_javascript("window.innerWidth")
 is_mobile = bool(screen_width is not None and screen_width < 768)
 
-# ---------------- UI ----------------
-st.title("🔍 Ricerca Ricambi in Magazzino")
+# ---------------- HEADER + POP-UP FILTRI ----------------
+c1, c2 = st.columns([1, 1])
+with c1:
+    st.title("🔍 Ricerca Ricambi in Magazzino")
+with c2:
+    # toolbar a destra con popover/expander
+    st.markdown('<div class="toolbar"> </div>', unsafe_allow_html=True)
+    # usa st.popover se esiste, altrimenti fallback a expander
+    popover = getattr(st, "popover", None)
+    if popover is not None:
+        with st.popover("⚙️ Filtri"):
+            with st.form("filters_form"):
+                st.text_input("🔢 Codice", placeholder="Inserisci codice…", key="codice")
+                st.text_input("📄 Descrizione", placeholder="Inserisci descrizione…", key="descrizione")
+                st.text_input("📍 Ubicazione", placeholder="Inserisci ubicazione…", key="ubicazione")
+                categorie_uniche = ["Tutte"] + sorted(df["Categoria"].dropna().unique().tolist())
+                st.selectbox("🛠️ Categoria", categorie_uniche, key="categoria")
+                colf1, colf2 = st.columns(2)
+                with colf1:
+                    apply_click = st.form_submit_button("✅ Applica")
+                with colf2:
+                    reset_click = st.form_submit_button("🔄 Reset", on_click=reset_filtri)
+                if apply_click:
+                    st.session_state["filters_applied"] = True
+    else:
+        with st.expander("⚙️ Filtri", expanded=is_mobile):
+            with st.form("filters_form_fallback"):
+                st.text_input("🔢 Codice", placeholder="Inserisci codice…", key="codice")
+                st.text_input("📄 Descrizione", placeholder="Inserisci descrizione…", key="descrizione")
+                st.text_input("📍 Ubicazione", placeholder="Inserisci ubicazione…", key="ubicazione")
+                categorie_uniche = ["Tutte"] + sorted(df["Categoria"].dropna().unique().tolist())
+                st.selectbox("🛠️ Categoria", categorie_uniche, key="categoria")
+                colf1, colf2 = st.columns(2)
+                with colf1:
+                    apply_click = st.form_submit_button("✅ Applica")
+                with colf2:
+                    reset_click = st.form_submit_button("🔄 Reset", on_click=reset_filtri)
+                if apply_click:
+                    st.session_state["filters_applied"] = True
 
-sidebar_container = st.expander("📌 Filtri", expanded=not is_mobile) if is_mobile else st.sidebar
-with sidebar_container:
-    if is_mobile:
-        st.info("📱 Modalità Mobile attiva")
-    st.text_input("🔢 Codice", placeholder="Inserisci codice...", key="codice")
-    st.text_input("📄 Descrizione", placeholder="Inserisci descrizione...", key="descrizione")
-    st.text_input("📍 Ubicazione", placeholder="Inserisci ubicazione...", key="ubicazione")
-    categorie_uniche = ["Tutte"] + sorted(df["Categoria"].dropna().unique().tolist())
-    st.selectbox("🛠️ Categoria", categorie_uniche, key="categoria")
+# ---------------- FILTRAGGIO (applica solo quando si preme Applica o Reset) ----------------
+if st.session_state.get("filters_applied", False):
+    st.session_state["filters_applied"] = False  # resetta il flag dopo l'applicazione
 
-    st.divider()
-    st.checkbox("Richiedi tutte le parole (più restrittivo)", key="match_all_words")
-    st.slider("Soglia fuzzy", min_value=50, max_value=100, value=st.session_state.soglia_fuzzy, step=1, key="soglia_fuzzy")
-    st.number_input("Limite righe per fuzzy", min_value=100, max_value=5000, step=100, key="fuzzy_row_limit")
+mask = pd.Series(True, index=df.index)
 
-    st.divider()
-    st.toggle("Applica automaticamente", key="auto_apply")
-    apply_now = st.button("⚡ Applica filtri adesso", disabled=st.session_state.auto_apply)
-    st.button("🔄 Reset filtri", on_click=reset_filtri)
+if st.session_state.codice:
+    q = _normalize_text(st.session_state.codice)
+    mask &= df["Codice_norm"].str.contains(q, na=False, regex=False)
 
-# ---------------- FILTRAGGIO (ottimizzato) ----------------
-should_apply = st.session_state.auto_apply or apply_now
-if should_apply:
-    filtro = apply_filters(df, st.session_state)
-else:
-    filtro = df
+if st.session_state.descrizione:
+    q = _normalize_text(st.session_state.descrizione)
+    mask &= df["Descrizione_norm"].str.contains(q, na=False)
+
+if st.session_state.ubicazione:
+    q = _normalize_text(st.session_state.ubicazione)
+    mask &= df["Ubicazione_norm"].str.contains(q, na=False, regex=False)
+
+if st.session_state.categoria != "Tutte":
+    q = _normalize_text(st.session_state.categoria)
+    mask &= df["Categoria_norm"] == q
+
+filtro = df[mask]
 
 # ---------------- RISULTATI ----------------
 total = len(filtro)
@@ -227,10 +191,9 @@ download_cols = ["Codice", "Descrizione", "Ubicazione", "Categoria"]
 
 # download SOLO su desktop/tablet (non mobile)
 if total > 0 and not is_mobile:
-    cols = [c for c in download_cols if c in df.columns]
     st.download_button(
-        "📥 Scarica tutti i risultati (CSV)",
-        filtro[cols].to_csv(index=False),
+        "📥 Scarica risultati (CSV)",
+        filtro[download_cols].to_csv(index=False),
         "risultati.csv",
         "text/csv",
     )
@@ -243,9 +206,9 @@ if is_mobile:
         st.markdown(f"""
             <div class="card">
                 <h4>🔢 {row['Codice']}</h4>
-                <p><strong>📄 Descrizione:</strong> {descrizione_html}</p>
-                <p><strong>📍 Ubicazione:</strong> {row['Ubicazione']}</p>
-                <p><strong>🛠️ Categoria:</strong> {row['Categoria']}</p>
+                <p><span class="muted">📄 Descrizione:</span> {descrizione_html}</p>
+                <p><span class="muted">📍 Ubicazione:</span> {row['Ubicazione']}</p>
+                <p><span class="muted">🛠️ Categoria:</span> {row['Categoria']}</p>
             </div>
         """, unsafe_allow_html=True)
     st.markdown('<div class="top-btn" onclick="window.scrollTo({top: 0, behavior: \'smooth\'});">⬆️</div>', unsafe_allow_html=True)
