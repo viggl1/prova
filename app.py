@@ -62,15 +62,6 @@ st.markdown("""
         border:1px solid #e5e7eb;
     }
     .stPopover, [data-testid="stPopover"] { max-width: 520px !important; }
-
-    .top-btn {
-        position: fixed; bottom: 20px; right: 20px;
-        background-color: #007bff; color: white;
-        border-radius: 50%; width: 45px; height: 45px;
-        text-align: center; font-size: 20px; cursor: pointer;
-        line-height: 45px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        z-index: 100;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -107,7 +98,7 @@ for col in required_cols:
 defaults = {"codice": "", "descrizione": "", "ubicazione": "", "categoria": "Tutte"}
 for k, v in defaults.items():
     st.session_state.setdefault(k, v)
-st.session_state.setdefault("filters_applied", True)  # applica al primo render
+st.session_state.setdefault("filters_applied", True)
 
 def reset_filtri():
     for k, v in defaults.items():
@@ -138,14 +129,14 @@ def _active_filters_chips():
 screen_width = st_javascript("window.innerWidth")
 is_mobile = bool(screen_width is not None and screen_width < 768)
 
-# ---------------- HEADER + POP-UP FILTRI (Descrizione prima di Ubicazione) ----------------
+# ---------------- HEADER + POP-UP FILTRI ----------------
 left, right = st.columns([3, 1])
 with left:
     st.title("🔍 Ricerca Ricambi in Magazzino")
 
 with right:
     active_n = _active_filters_count()
-    label = "⚙️ Filtri" + (f" · {active_n}" if active_n else "")
+    label = "🔽 Filtri" + (f" · {active_n}" if active_n else "")
     popover = getattr(st, "popover", None)
 
     if popover is not None:
@@ -154,10 +145,8 @@ with right:
                 a1, a2 = st.columns([1,1])
                 apply_click = a1.form_submit_button("✅ Applica", use_container_width=True)
                 reset_click = a2.form_submit_button("🔄 Reset", use_container_width=True, on_click=reset_filtri)
-
                 st.write("")
 
-                # 🔄 Ordine invertito: Descrizione prima di Ubicazione
                 col_l, col_r = st.columns(2)
                 with col_l:
                     st.text_input("🔢 Codice", placeholder="Es. CG055919", key="codice")
@@ -177,7 +166,6 @@ with right:
                 apply_click = a1.form_submit_button("✅ Applica", use_container_width=True)
                 reset_click = a2.form_submit_button("🔄 Reset", use_container_width=True, on_click=reset_filtri)
 
-                # 🔄 Ordine invertito anche nel fallback
                 col_l, col_r = st.columns(2)
                 with col_l:
                     st.text_input("🔢 Codice", placeholder="Es. CG238258", key="codice")
@@ -199,7 +187,7 @@ if chips:
 
 # ---------------- FILTRAGGIO ----------------
 if st.session_state.get("filters_applied", False):
-    st.session_state["filters_applied"] = False  # consume flag
+    st.session_state["filters_applied"] = False
 
 mask = pd.Series(True, index=df.index)
 
@@ -228,7 +216,6 @@ st.markdown(f"### 📦 {total} risultato(i) trovati")
 download_cols = ["Codice", "Descrizione", "Ubicazione", "Categoria"]
 cols_out = [c for c in download_cols if c in filtro.columns]
 
-# download SOLO su desktop/tablet (non mobile)
 if total > 0 and not is_mobile and cols_out:
     st.download_button(
         "📥 Scarica risultati (CSV)",
@@ -248,6 +235,5 @@ if is_mobile:
                 <p><span class="muted">🛠️ Categoria:</span> {row['Categoria']}</p>
             </div>
         """, unsafe_allow_html=True)
-    st.markdown('<div class="top-btn" onclick="window.scrollTo({top: 0, behavior: \'smooth\'});">⬆️</div>', unsafe_allow_html=True)
 else:
     st.dataframe(filtro[cols_out], use_container_width=True, height=480)
