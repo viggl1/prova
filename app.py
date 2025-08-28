@@ -54,7 +54,6 @@ st.markdown("""
     .card p { margin: 4px 0; font-size: 14px; color: #333; }
     .muted { color:#666; font-size:12px; }
 
-    /* Toolbar e chip filtri attivi */
     .toolbar { display:flex; gap:.5rem; justify-content:flex-end; align-items:center; }
     .chips { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.5rem; }
     .chip {
@@ -62,8 +61,6 @@ st.markdown("""
         padding:.2rem .5rem; border-radius:999px; background:#f1f3f5; font-size:12px; color:#333;
         border:1px solid #e5e7eb;
     }
-
-    /* Popover: larghezza massima comoda su desktop */
     .stPopover, [data-testid="stPopover"] { max-width: 520px !important; }
 
     .top-btn {
@@ -141,13 +138,12 @@ def _active_filters_chips():
 screen_width = st_javascript("window.innerWidth")
 is_mobile = bool(screen_width is not None and screen_width < 768)
 
-# ---------------- HEADER + POP-UP FILTRI OTTIMIZZATO ----------------
-c1, c2 = st.columns([1, 1])
-with c1:
+# ---------------- HEADER + POP-UP FILTRI (Descrizione prima di Ubicazione) ----------------
+left, right = st.columns([3, 1])
+with left:
     st.title("🔍 Ricerca Ricambi in Magazzino")
 
-with c2:
-    # bottone con badge (# filtri attivi)
+with right:
     active_n = _active_filters_count()
     label = "⚙️ Filtri" + (f" · {active_n}" if active_n else "")
     popover = getattr(st, "popover", None)
@@ -155,24 +151,22 @@ with c2:
     if popover is not None:
         with st.popover(label):
             with st.form("filters_form", clear_on_submit=False):
-                # azioni in alto
                 a1, a2 = st.columns([1,1])
                 apply_click = a1.form_submit_button("✅ Applica", use_container_width=True)
                 reset_click = a2.form_submit_button("🔄 Reset", use_container_width=True, on_click=reset_filtri)
 
-                st.write("")  # separatore sottile
+                st.write("")
 
-                # layout 2 colonne per campi
+                # 🔄 Ordine invertito: Descrizione prima di Ubicazione
                 col_l, col_r = st.columns(2)
                 with col_l:
                     st.text_input("🔢 Codice", placeholder="Es. CG055919", key="codice")
-                    st.text_input("📍 Ubicazione", placeholder="Es. 0 C 001 02 - C2", key="ubicazione")
-                with col_r:
                     st.text_input("📄 Descrizione", placeholder="Es. Cuscinetto", key="descrizione")
+                with col_r:
+                    st.text_input("📍 Ubicazione", placeholder="Es. 0 C 001 02 - C2", key="ubicazione")
                     categorie_uniche = ["Tutte"] + sorted(df["Categoria"].dropna().unique().tolist())
                     st.selectbox("🛠️ Categoria", categorie_uniche, key="categoria")
 
-                # suggerimento UX
                 st.caption("Suggerimento: premi **Invio** per applicare i filtri mentre scrivi.")
                 if apply_click:
                     st.session_state["filters_applied"] = True
@@ -183,12 +177,13 @@ with c2:
                 apply_click = a1.form_submit_button("✅ Applica", use_container_width=True)
                 reset_click = a2.form_submit_button("🔄 Reset", use_container_width=True, on_click=reset_filtri)
 
+                # 🔄 Ordine invertito anche nel fallback
                 col_l, col_r = st.columns(2)
                 with col_l:
                     st.text_input("🔢 Codice", placeholder="Es. CG238258", key="codice")
-                    st.text_input("📍 Ubicazione", placeholder="Es. 0 B 001 03 - B2", key="ubicazione")
-                with col_r:
                     st.text_input("📄 Descrizione", placeholder="Es. Boccola", key="descrizione")
+                with col_r:
+                    st.text_input("📍 Ubicazione", placeholder="Es. 0 B 001 03 - B2", key="ubicazione")
                     categorie_uniche = ["Tutte"] + sorted(df["Categoria"].dropna().unique().tolist())
                     st.selectbox("🛠️ Categoria", categorie_uniche, key="categoria")
 
@@ -214,7 +209,7 @@ if st.session_state.codice:
 
 if st.session_state.descrizione:
     q = _normalize_text(st.session_state.descrizione)
-    mask &= df["Descrizione_norm"].str.contains(q, na=False)
+    mask &= df["Descrizione_norm"].str.contains(q, na=False, regex=False)
 
 if st.session_state.ubicazione:
     q = _normalize_text(st.session_state.ubicazione)
@@ -231,12 +226,13 @@ total = len(filtro)
 st.markdown(f"### 📦 {total} risultato(i) trovati")
 
 download_cols = ["Codice", "Descrizione", "Ubicazione", "Categoria"]
+cols_out = [c for c in download_cols if c in filtro.columns]
 
 # download SOLO su desktop/tablet (non mobile)
-if total > 0 and not is_mobile:
+if total > 0 and not is_mobile and cols_out:
     st.download_button(
         "📥 Scarica risultati (CSV)",
-        filtro[download_cols].to_csv(index=False),
+        filtro[cols_out].to_csv(index=False),
         "risultati.csv",
         "text/csv",
     )
@@ -254,6 +250,4 @@ if is_mobile:
         """, unsafe_allow_html=True)
     st.markdown('<div class="top-btn" onclick="window.scrollTo({top: 0, behavior: \'smooth\'});">⬆️</div>', unsafe_allow_html=True)
 else:
-    st.dataframe(filtro[download_cols], use_container_width=True, height=480)
-
-
+    st.dataframe(filtro[cols_out], use_container_width=True, height=480)
