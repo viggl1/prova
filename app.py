@@ -37,15 +37,6 @@ def load_data() -> pd.DataFrame:
         st.error(f"Errore caricamento dati: {e}")
         return pd.DataFrame()
 
-def evidenzia_testo_multi(testo: str, query: str) -> str:
-    if not query or not isinstance(testo, str):
-        return str(testo)
-    words = [re.escape(w) for w in query.split() if w.strip()]
-    if not words:
-        return testo
-    pattern = re.compile(r"(" + "|".join(words) + r")", re.IGNORECASE)
-    return pattern.sub(r"<mark>\\1</mark>", testo)
-
 # ---------------- CSS ----------------
 st.markdown("""
     <style>
@@ -61,9 +52,20 @@ st.markdown("""
     }
     .card h4 { margin: 0 0 8px; font-size: 18px; color: #007bff; }
     .card p { margin: 4px 0; font-size: 14px; color: #333; }
-    mark { background-color: #ffeb3b; padding: 2px 4px; border-radius: 3px; }
-    .toolbar { display:flex; gap:.5rem; justify-content:flex-end; align-items:center; }
     .muted { color:#666; font-size:12px; }
+
+    /* Toolbar e chip filtri attivi */
+    .toolbar { display:flex; gap:.5rem; justify-content:flex-end; align-items:center; }
+    .chips { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.5rem; }
+    .chip {
+        display:inline-flex; align-items:center; gap:.35rem;
+        padding:.2rem .5rem; border-radius:999px; background:#f1f3f5; font-size:12px; color:#333;
+        border:1px solid #e5e7eb;
+    }
+
+    /* Popover: larghezza massima comoda su desktop */
+    .stPopover, [data-testid="stPopover"] { max-width: 520px !important; }
+
     .top-btn {
         position: fixed; bottom: 20px; right: 20px;
         background-color: #007bff; color: white;
@@ -108,60 +110,101 @@ for col in required_cols:
 defaults = {"codice": "", "descrizione": "", "ubicazione": "", "categoria": "Tutte"}
 for k, v in defaults.items():
     st.session_state.setdefault(k, v)
-st.session_state.setdefault("filters_applied", False)  # flag per bottone Applica
+st.session_state.setdefault("filters_applied", True)  # applica al primo render
 
 def reset_filtri():
     for k, v in defaults.items():
         st.session_state[k] = v
-    st.session_state["filters_applied"] = True  # forza refresh
+    st.session_state["filters_applied"] = True
+
+def _active_filters_count() -> int:
+    cnt = 0
+    if st.session_state.codice.strip(): cnt += 1
+    if st.session_state.descrizione.strip(): cnt += 1
+    if st.session_state.ubicazione.strip(): cnt += 1
+    if st.session_state.categoria != "Tutte": cnt += 1
+    return cnt
+
+def _active_filters_chips():
+    chips = []
+    if st.session_state.codice.strip():
+        chips.append(("Codice", st.session_state.codice.strip()))
+    if st.session_state.descrizione.strip():
+        chips.append(("Descrizione", st.session_state.descrizione.strip()))
+    if st.session_state.ubicazione.strip():
+        chips.append(("Ubicazione", st.session_state.ubicazione.strip()))
+    if st.session_state.categoria != "Tutte":
+        chips.append(("Categoria", st.session_state.categoria))
+    return chips
 
 # ---------------- DETECT MOBILE ----------------
 screen_width = st_javascript("window.innerWidth")
 is_mobile = bool(screen_width is not None and screen_width < 768)
 
-# ---------------- HEADER + POP-UP FILTRI ----------------
+# ---------------- HEADER + POP-UP FILTRI OTTIMIZZATO ----------------
 c1, c2 = st.columns([1, 1])
 with c1:
     st.title("🔍 Ricerca Ricambi in Magazzino")
+
 with c2:
-    # toolbar a destra con popover/expander
-    st.markdown('<div class="toolbar"> </div>', unsafe_allow_html=True)
-    # usa st.popover se esiste, altrimenti fallback a expander
+    # bottone con badge (# filtri attivi)
+    active_n = _active_filters_count()
+    label = "⚙️ Filtri" + (f" · {active_n}" if active_n else "")
     popover = getattr(st, "popover", None)
+
     if popover is not None:
-        with st.popover("⚙️ Filtri"):
-            with st.form("filters_form"):
-                st.text_input("🔢 Codice", placeholder="Inserisci codice…", key="codice")
-                st.text_input("📄 Descrizione", placeholder="Inserisci descrizione…", key="descrizione")
-                st.text_input("📍 Ubicazione", placeholder="Inserisci ubicazione…", key="ubicazione")
-                categorie_uniche = ["Tutte"] + sorted(df["Categoria"].dropna().unique().tolist())
-                st.selectbox("🛠️ Categoria", categorie_uniche, key="categoria")
-                colf1, colf2 = st.columns(2)
-                with colf1:
-                    apply_click = st.form_submit_button("✅ Applica")
-                with colf2:
-                    reset_click = st.form_submit_button("🔄 Reset", on_click=reset_filtri)
+        with st.popover(label):
+            with st.form("filters_form", clear_on_submit=False):
+                # azioni in alto
+                a1, a2 = st.columns([1,1])
+                apply_click = a1.form_submit_button("✅ Applica", use_container_width=True)
+                reset_click = a2.form_submit_button("🔄 Reset", use_container_width=True, on_click=reset_filtri)
+
+                st.write("")  # separatore sottile
+
+                # layout 2 colonne per campi
+                col_l, col_r = st.columns(2)
+                with col_l:
+                    st.text_input("🔢 Codice", placeholder="Es. 123AB", key="codice")
+                    st.text_input("📍 Ubicazione", placeholder="Es. Aisle 3 - Box 12", key="ubicazione")
+                with col_r:
+                    st.text_input("📄 Descrizione", placeholder="Es. guarnizione olio", key="descrizione")
+                    categorie_uniche = ["Tutte"] + sorted(df["Categoria"].dropna().unique().tolist())
+                    st.selectbox("🛠️ Categoria", categorie_uniche, key="categoria")
+
+                # suggerimento UX
+                st.caption("Suggerimento: premi **Invio** per applicare i filtri mentre scrivi.")
                 if apply_click:
                     st.session_state["filters_applied"] = True
     else:
-        with st.expander("⚙️ Filtri", expanded=is_mobile):
-            with st.form("filters_form_fallback"):
-                st.text_input("🔢 Codice", placeholder="Inserisci codice…", key="codice")
-                st.text_input("📄 Descrizione", placeholder="Inserisci descrizione…", key="descrizione")
-                st.text_input("📍 Ubicazione", placeholder="Inserisci ubicazione…", key="ubicazione")
-                categorie_uniche = ["Tutte"] + sorted(df["Categoria"].dropna().unique().tolist())
-                st.selectbox("🛠️ Categoria", categorie_uniche, key="categoria")
-                colf1, colf2 = st.columns(2)
-                with colf1:
-                    apply_click = st.form_submit_button("✅ Applica")
-                with colf2:
-                    reset_click = st.form_submit_button("🔄 Reset", on_click=reset_filtri)
+        with st.expander(label, expanded=is_mobile):
+            with st.form("filters_form_fallback", clear_on_submit=False):
+                a1, a2 = st.columns([1,1])
+                apply_click = a1.form_submit_button("✅ Applica", use_container_width=True)
+                reset_click = a2.form_submit_button("🔄 Reset", use_container_width=True, on_click=reset_filtri)
+
+                col_l, col_r = st.columns(2)
+                with col_l:
+                    st.text_input("🔢 Codice", placeholder="Es. 123AB", key="codice")
+                    st.text_input("📍 Ubicazione", placeholder="Es. Aisle 3 - Box 12", key="ubicazione")
+                with col_r:
+                    st.text_input("📄 Descrizione", placeholder="Es. guarnizione olio", key="descrizione")
+                    categorie_uniche = ["Tutte"] + sorted(df["Categoria"].dropna().unique().tolist())
+                    st.selectbox("🛠️ Categoria", categorie_uniche, key="categoria")
+
+                st.caption("Suggerimento: premi **Invio** per applicare i filtri mentre scrivi.")
                 if apply_click:
                     st.session_state["filters_applied"] = True
 
-# ---------------- FILTRAGGIO (applica solo quando si preme Applica o Reset) ----------------
+# Chips dei filtri attivi
+chips = _active_filters_chips()
+if chips:
+    chip_html = "".join([f'<span class="chip">{name}: {val}</span>' for name, val in chips])
+    st.markdown(f'<div class="chips">{chip_html}</div>', unsafe_allow_html=True)
+
+# ---------------- FILTRAGGIO ----------------
 if st.session_state.get("filters_applied", False):
-    st.session_state["filters_applied"] = False  # resetta il flag dopo l'applicazione
+    st.session_state["filters_applied"] = False  # consume flag
 
 mask = pd.Series(True, index=df.index)
 
@@ -200,13 +243,11 @@ if total > 0 and not is_mobile:
 
 # ---------------- VISUALIZZAZIONE ----------------
 if is_mobile:
-    keyword = st.session_state.descrizione
     for _, row in filtro.iterrows():
-        descrizione_html = evidenzia_testo_multi(str(row["Descrizione"]), keyword)
         st.markdown(f"""
             <div class="card">
                 <h4>🔢 {row['Codice']}</h4>
-                <p><span class="muted">📄 Descrizione:</span> {descrizione_html}</p>
+                <p><span class="muted">📄 Descrizione:</span> {row['Descrizione']}</p>
                 <p><span class="muted">📍 Ubicazione:</span> {row['Ubicazione']}</p>
                 <p><span class="muted">🛠️ Categoria:</span> {row['Categoria']}</p>
             </div>
