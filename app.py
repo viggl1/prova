@@ -84,6 +84,10 @@ if df.empty:
 
 # Pulizia colonne + requisiti
 df.columns = df.columns.str.strip().str.title()
+
+# Evita "nan" in output: rimpiazza NaN con stringa vuota PRIMA della normalizzazione
+df = df.fillna("")
+
 required_cols = {"Codice", "Descrizione", "Ubicazione", "Categoria"}
 missing = required_cols - set(df.columns)
 if missing:
@@ -98,7 +102,7 @@ for col in required_cols:
 defaults = {"codice": "", "descrizione": "", "ubicazione": "", "categoria": "Tutte"}
 for k, v in defaults.items():
     st.session_state.setdefault(k, v)
-st.session_state.setdefault("filters_applied", True)
+st.session_state.setdefault("filters_applied", True)  # applica al primo render
 
 def reset_filtri():
     for k, v in defaults.items():
@@ -129,7 +133,7 @@ def _active_filters_chips():
 screen_width = st_javascript("window.innerWidth")
 is_mobile = bool(screen_width is not None and screen_width < 768)
 
-# ---------------- HEADER + POP-UP FILTRI ----------------
+# ---------------- HEADER + POP-UP FILTRI (Descrizione prima di Ubicazione) ----------------
 left, right = st.columns([3, 1])
 with left:
     st.title("🔍 Ricerca Ricambi in Magazzino")
@@ -147,6 +151,7 @@ with right:
                 reset_click = a2.form_submit_button("🔄 Reset", use_container_width=True, on_click=reset_filtri)
                 st.write("")
 
+                # Descrizione prima di Ubicazione
                 col_l, col_r = st.columns(2)
                 with col_l:
                     st.text_input("🔢 Codice", placeholder="Es. CG055919", key="codice")
@@ -187,7 +192,7 @@ if chips:
 
 # ---------------- FILTRAGGIO ----------------
 if st.session_state.get("filters_applied", False):
-    st.session_state["filters_applied"] = False
+    st.session_state["filters_applied"] = False  # consume flag
 
 mask = pd.Series(True, index=df.index)
 
@@ -216,6 +221,7 @@ st.markdown(f"### 📦 {total} risultato(i) trovati")
 download_cols = ["Codice", "Descrizione", "Ubicazione", "Categoria"]
 cols_out = [c for c in download_cols if c in filtro.columns]
 
+# download SOLO su desktop/tablet (non mobile)
 if total > 0 and not is_mobile and cols_out:
     st.download_button(
         "📥 Scarica risultati (CSV)",
@@ -227,13 +233,22 @@ if total > 0 and not is_mobile and cols_out:
 # ---------------- VISUALIZZAZIONE ----------------
 if is_mobile:
     for _, row in filtro.iterrows():
+        code_view = "—" if str(row["Codice"]).strip() == "" else row["Codice"]
+        desc_view = "—" if str(row["Descrizione"]).strip() == "" else row["Descrizione"]
+        ubic_view = "—" if str(row["Ubicazione"]).strip() == "" else row["Ubicazione"]
+        cat_view  = "—" if str(row["Categoria"]).strip() == "" else row["Categoria"]
+
         st.markdown(f"""
             <div class="card">
-                <h4>🔢 {row['Codice']}</h4>
-                <p><span class="muted">📄 Descrizione:</span> {row['Descrizione']}</p>
-                <p><span class="muted">📍 Ubicazione:</span> {row['Ubicazione']}</p>
-                <p><span class="muted">🛠️ Categoria:</span> {row['Categoria']}</p>
+                <h4>🔢 {code_view}</h4>
+                <p><span class="muted">📄 Descrizione:</span> {desc_view}</p>
+                <p><span class="muted">📍 Ubicazione:</span> {ubic_view}</p>
+                <p><span class="muted">🛠️ Categoria:</span> {cat_view}</p>
             </div>
         """, unsafe_allow_html=True)
 else:
-    st.dataframe(filtro[cols_out], use_container_width=True, height=480)
+    display_df = filtro.copy()
+    for col in ["Codice", "Descrizione", "Ubicazione", "Categoria"]:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].map(lambda v: "—" if str(v).strip() == "" else v)
+    st.dataframe(display_df[cols_out], use_container_width=True, height=480)
